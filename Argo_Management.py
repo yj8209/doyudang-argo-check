@@ -1,13 +1,11 @@
 import streamlit as st
 import pandas as pd
 from PIL import Image
-import os
 
 # --- 페이지 설정 및 로고 ---
 st.set_page_config(page_title="두유당 ARGO 정산 검증 대시보드", layout="wide")
 
-# 로고 이미지 로드 (웹 배포를 위해 상대 경로로 변경)
-# app.py가 있는 폴더 안에 'static' 폴더를 만들고 그 안에 이미지를 넣어주세요.
+# 로고 이미지 로드
 logo_path = "static/KakaoTalk_20260405_223421313.png" 
 try:
     image = Image.open(logo_path)
@@ -38,7 +36,8 @@ uploaded_excel = st.file_uploader("당월 아르고 정산 원본 엑셀 파일(
 # --- 데이터 전처리 헬퍼 함수 ---
 def load_excel_sheet(excel_file, sheet_name, skip_rows):
     try:
-        df = pd.read_excel(excel_file, sheet_name=sheet_name, skiprows=skip_rows)
+        # 긴 주문번호 등이 지수(E+15)로 깨지지 않도록 dtype=str 적용
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, skiprows=skip_rows, dtype=str)
         if '고객사명' not in df.columns and len(df.columns) > 0:
             df.columns = df.iloc[0]
             df = df[1:].reset_index(drop=True)
@@ -79,6 +78,14 @@ with tab2:
             df_in = load_excel_sheet(uploaded_excel, sheet_name='입고비', skip_rows=6)
             
             if not df_in.empty:
+                # 동적 인덱스 탐색 (다중 헤더 오류 방지)
+                col_idx_in_qty, col_idx_in_amt = 10, 9
+                for i, col_name in enumerate(df_in.columns):
+                    if '입고 검수비(기본)' in str(col_name):
+                        sub_val = str(df_in.iloc[0, i]).strip()
+                        if sub_val == '개수': col_idx_in_qty = i
+                        elif sub_val == '금액': col_idx_in_amt = i
+                
                 df_filtered = df_in[df_in['SKU 이름'] == selected_sku]
                 
                 if df_filtered.empty:
@@ -91,22 +98,27 @@ with tab2:
                     billed_total_amt = 0
                     
                     for index, row in df_filtered.iterrows():
-                        try:
-                            row_qty = float(row.iloc[10]) 
-                            row_billed_amt = float(row.iloc[9]) 
-                        except:
-                            row_qty = 0
-                            row_billed_amt = 0
+                        if str(row['고객사명']).strip() == '' or str(row.iloc[col_idx_in_qty]).strip() == '개수':
+                            continue # 서브 헤더 건너뛰기
                             
-                        if pd.notna(row_qty):
-                            total_billed_qty += row_qty
-                            if '당일' in str(row['입고유형']):
-                                calculated_total_amt += (row_qty * 200)
-                            else:
-                                calculated_total_amt += (row_qty * 100)
-                                
-                        if pd.notna(row_billed_amt):
-                            billed_total_amt += row_billed_amt
+                        try:
+                            row_qty_str = str(row.iloc[col_idx_in_qty]).strip()
+                            row_billed_amt_str = str(row.iloc[col_idx_in_amt]).strip()
+                            
+                            row_qty = float(row_qty_str) if row_qty_str.lower() != 'nan' and row_qty_str != '' else 0
+                            row_billed_amt = float(row_billed_amt_str) if row_billed_amt_str.lower() != 'nan' and row_billed_amt_str != '' else 0
+                            
+                            if pd.notna(row_qty):
+                                total_billed_qty += row_qty
+                                if '당일' in str(row['입고유형']):
+                                    calculated_total_amt += (row_qty * 200)
+                                else:
+                                    calculated_total_amt += (row_qty * 100)
+                                    
+                            if pd.notna(row_billed_amt):
+                                billed_total_amt += row_billed_amt
+                        except:
+                            continue
                     
                     st.subheader(f"[{selected_sku}] 입고 검증 결과")
                     col1, col2 = st.columns(2)
@@ -135,21 +147,42 @@ with tab3:
                 errors_list = []
                 warnings_list = []
                 
+                # 동적 인덱스 탐색 (다중 헤더 오류 방지)
+                col_idx_total, col_idx_island, col_idx_same, col_idx_diff = 14, 19, 15, 16
+                for i, val in enumerate(df_out.iloc[0]):
+                    val_str = str(val).strip()
+                    if val_str == '총 금액': col_idx_total = i
+                    elif val_str == '도서 산간 추가 택배비': col_idx_island = i
+                    elif val_str == '합포장(동종)': col_idx_same = i
+                    elif val_str == '합포장(이종)': col_idx_diff = i
+                
                 for index, row in df_out.iterrows():
+                    if index == 0: continue # 서브 헤더 행 건너뛰기
+                    
                     try:
-                        sku_count = int(row['SKU 개수'])
+                        sku_count_str = str(row['SKU 개수']).strip()
+                        if sku_count_str.lower() == 'nan' or sku_count_str == '': continue
+                        sku_count = int(float(sku_count_str))
                     except:
                         continue 
                     
-                    store_name = str(row.get('스토어명', ''))
-                    actual_grade = str(row.get('등급', '')).strip()
-                    billed_total = float(row.get('총 금액', 0) if pd.notna(row.get('총 금액')) else 0)
+                    order_number = str(row['주문번호']).replace('.0', '').strip()
+                    if order_number.lower() == 'nan': order_number = ""
                     
-                    island_val = row.get('도서 산간 추가 택배비')
-                    island_cost = 3000 if pd.notna(island_val) and str(island_val).strip() != '' else 0
+                    store_name = str(row['스토어명']).strip()
+                    actual_grade = str(row['등급']).strip()
                     
-                    has_same = pd.notna(row.get('합포장(동종)')) and str(row.get('합포장(동종)')).strip() != ''
-                    has_diff = pd.notna(row.get('합포장(이종)')) and str(row.get('합포장(이종)')).strip() != ''
+                    billed_total_str = str(row.iloc[col_idx_total]).replace(',', '').strip()
+                    billed_total = float(billed_total_str) if billed_total_str.lower() != 'nan' and billed_total_str != '' else 0
+                    
+                    island_val = str(row.iloc[col_idx_island]).strip()
+                    island_cost = 3000 if island_val.lower() != 'nan' and island_val != '' else 0
+                    
+                    same_val = str(row.iloc[col_idx_same]).strip()
+                    has_same = same_val.lower() != 'nan' and same_val != ''
+                    
+                    diff_val = str(row.iloc[col_idx_diff]).strip()
+                    has_diff = diff_val.lower() != 'nan' and diff_val != ''
                     
                     is_naver = '네이버스마트스토어' in store_name
                     
@@ -162,7 +195,7 @@ with tab3:
                     if sku_count >= 7:
                         warnings_list.append({
                             '엑셀 행 번호': index + 6, 
-                            '주문번호': row.get('주문번호'),
+                            '주문번호': order_number,
                             '스토어명': store_name,
                             'SKU 개수': sku_count,
                             '실제 등급': actual_grade,
@@ -194,7 +227,7 @@ with tab3:
                         elif has_same: packing_cost = 250
                     
                     if actual_grade != expected_grade:
-                        error_reasons.append(f"등급 오분류(규정:{expected_grade} ↔ 청구:{actual_grade})")
+                        error_reasons.append(f"등급 오분류({expected_grade}↔{actual_grade})")
                     
                     expected_total = base_shipping + box_cost + packing_cost + island_cost
                     
@@ -203,23 +236,33 @@ with tab3:
                     
                     if error_reasons:
                         errors_list.append({
-                            '엑셀 행 번호': index + 6,
-                            '주문번호': row.get('주문번호'),
+                            '엑셀 행': index + 6,
+                            '주문번호': order_number,
                             'SKU 개수': sku_count,
                             '오류 사유': " / ".join(error_reasons),
                             '청구 총금액': billed_total,
-                            '자체 산정 총금액': expected_total,
+                            '산정 총금액': expected_total,
                             '초과 청구액': billed_total - expected_total if billed_total > expected_total else 0
                         })
                 
                 st.subheader("⚠️ 정산 오류 식별 내역 (등급 오분류 및 초과 청구)")
                 if errors_list:
                     df_errors = pd.DataFrame(errors_list)
-                    st.dataframe(df_errors.style.format({'청구 총금액': '{:,.0f}', '자체 산정 총금액': '{:,.0f}', '초과 청구액': '{:,.0f}'}))
+                    
+                    # --- 표 디자인(스타일링) 상세 적용 ---
+                    styled_errors = df_errors.style \
+                        .set_table_styles([
+                            {'selector': 'th', 'props': [('text-align', 'center')]}, # 헤더 가운데 정렬
+                            {'selector': 'td', 'props': [('text-align', 'center')]}  # 일반 셀 가운데 정렬
+                        ]) \
+                        .set_properties(subset=['주문번호'], **{'text-align': 'right'}) \
+                        .set_properties(subset=['초과 청구액'], **{'background-color': '#FFF2CC', 'color': '#D32F2F', 'font-weight': 'bold'}) \
+                        .format({'청구 총금액': '{:,.0f}', '산정 총금액': '{:,.0f}', '초과 청구액': '{:,.0f}'})
+                    
+                    st.dataframe(styled_errors, use_container_width=True)
                     st.error(f"총 {len(errors_list)}건의 정산 오류 내역이 발견되었습니다.")
                     
-                    # --- 엑셀(CSV) 다운로드 버튼 추가 ---
-                    # 한글 깨짐 방지를 위해 utf-8-sig 인코딩 사용
+                    # 다운로드 버튼용 CSV (스타일이 아닌 원본 데이터 활용)
                     csv_errors = df_errors.to_csv(index=False).encode('utf-8-sig')
                     st.download_button(
                         label="📥 오류 내역 CSV 다운로드",
@@ -233,10 +276,9 @@ with tab3:
                 st.subheader("🔍 별도 확인 필요 (SKU 7개 이상)")
                 if warnings_list:
                     df_warnings = pd.DataFrame(warnings_list)
-                    st.dataframe(df_warnings)
+                    st.dataframe(df_warnings, use_container_width=True)
                     st.info(f"총 {len(warnings_list)}건의 대량(7개 이상) 주문 건이 존재합니다. 수동 확인이 필요합니다.")
                     
-                    # --- 예외 내역 다운로드 버튼 추가 ---
                     csv_warnings = df_warnings.to_csv(index=False).encode('utf-8-sig')
                     st.download_button(
                         label="📥 대량 주문 내역 CSV 다운로드",
