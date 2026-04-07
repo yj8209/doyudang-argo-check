@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from PIL import Image
-import io  # 엑셀 파일 변환을 위해 새로 추가된 내장 모듈
+import io
 
 # --- 페이지 설정 및 로고 ---
 st.set_page_config(page_title="두유당 ARGO 정산 검증 대시보드", layout="wide")
@@ -58,7 +58,7 @@ with tab1:
     독립 기업인 두유당의 자체적인 기준에 맞추어, 아르고(ARGO) 풀필먼트에서 매월 청구하는 정산 엑셀 데이터의 오류를 정밀하게 검증하는 시스템입니다.
     
     * **이용 방법:** 상단에 아르고에서 전달받은 원본 엑셀 파일 하나만 업로드하면, 아래 각 탭에서 해당 월의 내역을 자동으로 분석합니다.
-    * **출력 기능:** 검증 완료 후 식별된 오류 내역은 스타일(하이라이트)이 포함된 엑셀 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
+    * **출력 기능:** 검증 완료 후 식별된 오류 내역 및 총 초과 청구액은 스타일(하이라이트)이 포함된 엑셀 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
     """)
 
 with tab2:
@@ -247,6 +247,24 @@ with tab3:
                 if errors_list:
                     df_errors = pd.DataFrame(errors_list)
                     
+                    # --- 총합 계산 및 행 추가 로직 ---
+                    total_billed = df_errors['청구 총금액'].sum()
+                    total_expected = df_errors['산정 총금액'].sum()
+                    total_excess = df_errors['초과 청구액'].sum()
+
+                    total_row = pd.DataFrame({
+                        '엑셀 행': [''],
+                        '주문번호': ['[ 총 합 계 ]'],
+                        'SKU 개수': [''],
+                        '오류 사유': [''],
+                        '청구 총금액': [total_billed],
+                        '산정 총금액': [total_expected],
+                        '초과 청구액': [total_excess]
+                    })
+                    
+                    # 데이터프레임 하단에 합계 행 병합
+                    df_errors = pd.concat([df_errors, total_row], ignore_index=True)
+                    
                     # --- 표 디자인(스타일링) 적용 ---
                     styled_errors = df_errors.style \
                         .set_table_styles([
@@ -257,17 +275,20 @@ with tab3:
                         .set_properties(subset=['초과 청구액'], **{'background-color': '#FFF2CC', 'color': '#D32F2F', 'font-weight': 'bold'}) \
                         .format({'청구 총금액': '{:,.0f}', '산정 총금액': '{:,.0f}', '초과 청구액': '{:,.0f}'})
                     
-                    st.dataframe(styled_errors, use_container_width=True)
+                    # 앱 화면 상단에 에러 건수와 총합계 위젯 크게 표기
                     st.error(f"총 {len(errors_list)}건의 정산 오류 내역이 발견되었습니다.")
+                    st.metric(label="🚨 총 초과 청구 금액 합계", value=f"{int(total_excess):,.0f} 원")
                     
-                    # --- 핵심 변경: 스타일이 적용된 데이터프레임을 메모리 상에서 엑셀 파일(.xlsx)로 변환 ---
+                    # 데이터 프레임 출력
+                    st.dataframe(styled_errors, use_container_width=True)
+                    
+                    # 엑셀 다운로드
                     excel_buffer = io.BytesIO()
-                    # engine='openpyxl'을 사용하여 스타일을 엑셀 서식으로 저장
                     styled_errors.to_excel(excel_buffer, engine='openpyxl', index=False)
                     excel_data = excel_buffer.getvalue()
                     
                     st.download_button(
-                        label="📥 오류 내역 엑셀 다운로드 (하이라이트 포함)",
+                        label="📥 오류 내역 엑셀 다운로드 (하이라이트 및 총합 포함)",
                         data=excel_data,
                         file_name='출고배송비_정산오류내역.xlsx',
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -281,7 +302,6 @@ with tab3:
                     st.dataframe(df_warnings, use_container_width=True)
                     st.info(f"총 {len(warnings_list)}건의 대량(7개 이상) 주문 건이 존재합니다. 수동 확인이 필요합니다.")
                     
-                    # 예외 내역도 통일성을 위해 엑셀로 다운로드되도록 수정
                     warning_buffer = io.BytesIO()
                     df_warnings.to_excel(warning_buffer, index=False, engine='openpyxl')
                     warning_excel_data = warning_buffer.getvalue()
