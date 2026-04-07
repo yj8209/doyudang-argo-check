@@ -1,0 +1,248 @@
+import streamlit as st
+import pandas as pd
+from PIL import Image
+import os
+
+# --- 페이지 설정 및 로고 ---
+st.set_page_config(page_title="두유당 ARGO 정산 검증 대시보드", layout="wide")
+
+# 로고 이미지 로드 (웹 배포를 위해 상대 경로로 변경)
+# app.py가 있는 폴더 안에 'static' 폴더를 만들고 그 안에 이미지를 넣어주세요.
+logo_path = "static/KakaoTalk_20260405_223421313.png" 
+try:
+    image = Image.open(logo_path)
+    st.image(image, width=200)
+except FileNotFoundError:
+    st.warning(f"로고 이미지를 찾을 수 없습니다. 경로를 확인해 주세요: {logo_path}")
+
+st.title("두유당 ARGO 월별 정산 정밀 검증 시스템")
+st.markdown("""
+<style>
+    .reportview-container .main .block-container{
+        max-width: 1200px;
+        padding-top: 2rem;
+        padding-right: 2rem;
+        padding-left: 2rem;
+        padding-bottom: 2rem;
+    }
+    h1 { color: #1E3A8A; }
+    h2 { color: #2563EB; }
+    .stFileUploader { padding-bottom: 2rem; border-bottom: 2px solid #E5E7EB; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 메인 엑셀 파일 업로드 영역 ---
+st.subheader("📁 아르고 정산 엑셀 파일 업로드")
+uploaded_excel = st.file_uploader("당월 아르고 정산 원본 엑셀 파일(.xlsx)을 이곳에 첨부해 주세요.", type=['xlsx', 'xls'])
+
+# --- 데이터 전처리 헬퍼 함수 ---
+def load_excel_sheet(excel_file, sheet_name, skip_rows):
+    try:
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, skiprows=skip_rows)
+        if '고객사명' not in df.columns and len(df.columns) > 0:
+            df.columns = df.iloc[0]
+            df = df[1:].reset_index(drop=True)
+        return df
+    except ValueError:
+        st.error(f"엑셀 파일 내에 '{sheet_name}' 시트가 존재하지 않습니다.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+        return pd.DataFrame()
+
+# --- 탭 구성 ---
+tab1, tab2, tab3 = st.tabs(["📊 시스템 개요", "📦 입고비 정밀 검증", "🚚 출고 배송비 정밀 검증"])
+
+with tab1:
+    st.header("시스템 개요")
+    st.write("""
+    독립 기업인 두유당의 자체적인 기준에 맞추어, 아르고(ARGO) 풀필먼트에서 매월 청구하는 정산 엑셀 데이터의 오류를 정밀하게 검증하는 시스템입니다.
+    
+    * **이용 방법:** 상단에 아르고에서 전달받은 원본 엑셀 파일 하나만 업로드하면, 아래 각 탭에서 해당 월의 내역을 자동으로 분석합니다.
+    * **출력 기능:** 검증 완료 후 식별된 오류 내역은 CSV 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
+    """)
+
+with tab2:
+    st.header("입고비 정밀 검증")
+    
+    if uploaded_excel is None:
+        st.info("👆 상단에 엑셀 파일을 먼저 업로드해 주세요.")
+    else:
+        sku_list = ['하루두유 BLACK', '하루두유 BLACK SWEET', '기타 (직접 입력)']
+        selected_sku = st.selectbox("검증할 SKU를 선택하세요:", sku_list)
+        if selected_sku == '기타 (직접 입력)':
+            selected_sku = st.text_input("SKU 이름을 정확히 입력해 주세요:")
+            
+        actual_inbound_qty = st.number_input("해당 월의 실제 입고 수량을 기입해 주세요:", min_value=0, step=1)
+        
+        if st.button("입고비 검증 실행"):
+            df_in = load_excel_sheet(uploaded_excel, sheet_name='입고비', skip_rows=6)
+            
+            if not df_in.empty:
+                df_filtered = df_in[df_in['SKU 이름'] == selected_sku]
+                
+                if df_filtered.empty:
+                    st.warning(f"업로드된 데이터에 '{selected_sku}' 입고 내역이 존재하지 않습니다.")
+                else:
+                    df_filtered['입고유형'] = df_filtered['입고유형'].fillna('')
+                    
+                    total_billed_qty = 0
+                    calculated_total_amt = 0
+                    billed_total_amt = 0
+                    
+                    for index, row in df_filtered.iterrows():
+                        try:
+                            row_qty = float(row.iloc[10]) 
+                            row_billed_amt = float(row.iloc[9]) 
+                        except:
+                            row_qty = 0
+                            row_billed_amt = 0
+                            
+                        if pd.notna(row_qty):
+                            total_billed_qty += row_qty
+                            if '당일' in str(row['입고유형']):
+                                calculated_total_amt += (row_qty * 200)
+                            else:
+                                calculated_total_amt += (row_qty * 100)
+                                
+                        if pd.notna(row_billed_amt):
+                            billed_total_amt += row_billed_amt
+                    
+                    st.subheader(f"[{selected_sku}] 입고 검증 결과")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("입력된 실제 입고 수량", f"{actual_inbound_qty} 개")
+                        st.metric("아르고 청구 입고 수량", f"{int(total_billed_qty)} 개")
+                    with col2:
+                        st.metric("아르고 청구 금액", f"{int(billed_total_amt):,} 원")
+                        st.metric("자체 산정 금액", f"{int(calculated_total_amt):,} 원")
+                    
+                    if actual_inbound_qty == total_billed_qty and billed_total_amt == calculated_total_amt:
+                        st.success("✅ 수량 및 청구 금액이 모두 정확히 일치합니다.")
+                    else:
+                        st.error("❌ 수량 또는 금액에 불일치가 발생했습니다. 확인이 필요합니다.")
+
+with tab3:
+    st.header("출고 배송비 정밀 검증")
+    
+    if uploaded_excel is None:
+        st.info("👆 상단에 엑셀 파일을 먼저 업로드해 주세요.")
+    else:
+        if st.button("출고 배송비 검증 실행"):
+            df_out = load_excel_sheet(uploaded_excel, sheet_name='출고 배송비', skip_rows=4)
+            
+            if not df_out.empty:
+                errors_list = []
+                warnings_list = []
+                
+                for index, row in df_out.iterrows():
+                    try:
+                        sku_count = int(row['SKU 개수'])
+                    except:
+                        continue 
+                    
+                    store_name = str(row.get('스토어명', ''))
+                    actual_grade = str(row.get('등급', '')).strip()
+                    billed_total = float(row.get('총 금액', 0) if pd.notna(row.get('총 금액')) else 0)
+                    
+                    island_val = row.get('도서 산간 추가 택배비')
+                    island_cost = 3000 if pd.notna(island_val) and str(island_val).strip() != '' else 0
+                    
+                    has_same = pd.notna(row.get('합포장(동종)')) and str(row.get('합포장(동종)')).strip() != ''
+                    has_diff = pd.notna(row.get('합포장(이종)')) and str(row.get('합포장(이종)')).strip() != ''
+                    
+                    is_naver = '네이버스마트스토어' in store_name
+                    
+                    expected_grade = ""
+                    base_shipping = 0
+                    box_cost = 0
+                    packing_cost = 0
+                    error_reasons = []
+                    
+                    if sku_count >= 7:
+                        warnings_list.append({
+                            '엑셀 행 번호': index + 6, 
+                            '주문번호': row.get('주문번호'),
+                            '스토어명': store_name,
+                            'SKU 개수': sku_count,
+                            '실제 등급': actual_grade,
+                            '청구 총금액': billed_total
+                        })
+                        continue
+                        
+                    elif sku_count == 1:
+                        expected_grade = "극소"
+                        base_shipping = 3050 if is_naver else 2750
+                        box_cost = 220
+                    elif sku_count == 2:
+                        expected_grade = "소"
+                        base_shipping = 3600 if is_naver else 3300
+                        box_cost = 220
+                        if has_diff: packing_cost = 100
+                        elif has_same: packing_cost = 50
+                    elif sku_count in [3, 4]:
+                        expected_grade = "소"
+                        base_shipping = 3600 if is_naver else 3300
+                        box_cost = 450
+                        if has_diff: packing_cost = 250
+                        elif has_same: packing_cost = 150
+                    elif sku_count in [5, 6]:
+                        expected_grade = "중"
+                        base_shipping = 4100 if is_naver else 3800
+                        box_cost = 800
+                        if has_diff: packing_cost = 400
+                        elif has_same: packing_cost = 250
+                    
+                    if actual_grade != expected_grade:
+                        error_reasons.append(f"등급 오분류(규정:{expected_grade} ↔ 청구:{actual_grade})")
+                    
+                    expected_total = base_shipping + box_cost + packing_cost + island_cost
+                    
+                    if billed_total > expected_total:
+                        error_reasons.append("금액 초과 청구")
+                    
+                    if error_reasons:
+                        errors_list.append({
+                            '엑셀 행 번호': index + 6,
+                            '주문번호': row.get('주문번호'),
+                            'SKU 개수': sku_count,
+                            '오류 사유': " / ".join(error_reasons),
+                            '청구 총금액': billed_total,
+                            '자체 산정 총금액': expected_total,
+                            '초과 청구액': billed_total - expected_total if billed_total > expected_total else 0
+                        })
+                
+                st.subheader("⚠️ 정산 오류 식별 내역 (등급 오분류 및 초과 청구)")
+                if errors_list:
+                    df_errors = pd.DataFrame(errors_list)
+                    st.dataframe(df_errors.style.format({'청구 총금액': '{:,.0f}', '자체 산정 총금액': '{:,.0f}', '초과 청구액': '{:,.0f}'}))
+                    st.error(f"총 {len(errors_list)}건의 정산 오류 내역이 발견되었습니다.")
+                    
+                    # --- 엑셀(CSV) 다운로드 버튼 추가 ---
+                    # 한글 깨짐 방지를 위해 utf-8-sig 인코딩 사용
+                    csv_errors = df_errors.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(
+                        label="📥 오류 내역 CSV 다운로드",
+                        data=csv_errors,
+                        file_name='출고배송비_정산오류내역.csv',
+                        mime='text/csv'
+                    )
+                else:
+                    st.success("모든 출고 배송비 건이 기준 등급 및 금액 내에서 정상적으로 청구되었습니다.")
+                    
+                st.subheader("🔍 별도 확인 필요 (SKU 7개 이상)")
+                if warnings_list:
+                    df_warnings = pd.DataFrame(warnings_list)
+                    st.dataframe(df_warnings)
+                    st.info(f"총 {len(warnings_list)}건의 대량(7개 이상) 주문 건이 존재합니다. 수동 확인이 필요합니다.")
+                    
+                    # --- 예외 내역 다운로드 버튼 추가 ---
+                    csv_warnings = df_warnings.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(
+                        label="📥 대량 주문 내역 CSV 다운로드",
+                        data=csv_warnings,
+                        file_name='출고배송비_대량주문예외내역.csv',
+                        mime='text/csv'
+                    )
+                else:
+                    st.write("해당되는 대량 주문 건이 없습니다.")
