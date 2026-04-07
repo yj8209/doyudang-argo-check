@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from PIL import Image
+import io  # 엑셀 파일 변환을 위해 새로 추가된 내장 모듈
 
 # --- 페이지 설정 및 로고 ---
 st.set_page_config(page_title="두유당 ARGO 정산 검증 대시보드", layout="wide")
@@ -36,7 +37,6 @@ uploaded_excel = st.file_uploader("당월 아르고 정산 원본 엑셀 파일(
 # --- 데이터 전처리 헬퍼 함수 ---
 def load_excel_sheet(excel_file, sheet_name, skip_rows):
     try:
-        # 긴 주문번호 등이 지수(E+15)로 깨지지 않도록 dtype=str 적용
         df = pd.read_excel(excel_file, sheet_name=sheet_name, skiprows=skip_rows, dtype=str)
         if '고객사명' not in df.columns and len(df.columns) > 0:
             df.columns = df.iloc[0]
@@ -58,7 +58,7 @@ with tab1:
     독립 기업인 두유당의 자체적인 기준에 맞추어, 아르고(ARGO) 풀필먼트에서 매월 청구하는 정산 엑셀 데이터의 오류를 정밀하게 검증하는 시스템입니다.
     
     * **이용 방법:** 상단에 아르고에서 전달받은 원본 엑셀 파일 하나만 업로드하면, 아래 각 탭에서 해당 월의 내역을 자동으로 분석합니다.
-    * **출력 기능:** 검증 완료 후 식별된 오류 내역은 CSV 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
+    * **출력 기능:** 검증 완료 후 식별된 오류 내역은 스타일(하이라이트)이 포함된 엑셀 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
     """)
 
 with tab2:
@@ -78,7 +78,6 @@ with tab2:
             df_in = load_excel_sheet(uploaded_excel, sheet_name='입고비', skip_rows=6)
             
             if not df_in.empty:
-                # 동적 인덱스 탐색 (다중 헤더 오류 방지)
                 col_idx_in_qty, col_idx_in_amt = 10, 9
                 for i, col_name in enumerate(df_in.columns):
                     if '입고 검수비(기본)' in str(col_name):
@@ -99,7 +98,7 @@ with tab2:
                     
                     for index, row in df_filtered.iterrows():
                         if str(row['고객사명']).strip() == '' or str(row.iloc[col_idx_in_qty]).strip() == '개수':
-                            continue # 서브 헤더 건너뛰기
+                            continue 
                             
                         try:
                             row_qty_str = str(row.iloc[col_idx_in_qty]).strip()
@@ -147,7 +146,6 @@ with tab3:
                 errors_list = []
                 warnings_list = []
                 
-                # 동적 인덱스 탐색 (다중 헤더 오류 방지)
                 col_idx_total, col_idx_island, col_idx_same, col_idx_diff = 14, 19, 15, 16
                 for i, val in enumerate(df_out.iloc[0]):
                     val_str = str(val).strip()
@@ -157,7 +155,7 @@ with tab3:
                     elif val_str == '합포장(이종)': col_idx_diff = i
                 
                 for index, row in df_out.iterrows():
-                    if index == 0: continue # 서브 헤더 행 건너뛰기
+                    if index == 0: continue
                     
                     try:
                         sku_count_str = str(row['SKU 개수']).strip()
@@ -249,11 +247,11 @@ with tab3:
                 if errors_list:
                     df_errors = pd.DataFrame(errors_list)
                     
-                    # --- 표 디자인(스타일링) 상세 적용 ---
+                    # --- 표 디자인(스타일링) 적용 ---
                     styled_errors = df_errors.style \
                         .set_table_styles([
-                            {'selector': 'th', 'props': [('text-align', 'center')]}, # 헤더 가운데 정렬
-                            {'selector': 'td', 'props': [('text-align', 'center')]}  # 일반 셀 가운데 정렬
+                            {'selector': 'th', 'props': [('text-align', 'center')]},
+                            {'selector': 'td', 'props': [('text-align', 'center')]}
                         ]) \
                         .set_properties(subset=['주문번호'], **{'text-align': 'right'}) \
                         .set_properties(subset=['초과 청구액'], **{'background-color': '#FFF2CC', 'color': '#D32F2F', 'font-weight': 'bold'}) \
@@ -262,13 +260,17 @@ with tab3:
                     st.dataframe(styled_errors, use_container_width=True)
                     st.error(f"총 {len(errors_list)}건의 정산 오류 내역이 발견되었습니다.")
                     
-                    # 다운로드 버튼용 CSV (스타일이 아닌 원본 데이터 활용)
-                    csv_errors = df_errors.to_csv(index=False).encode('utf-8-sig')
+                    # --- 핵심 변경: 스타일이 적용된 데이터프레임을 메모리 상에서 엑셀 파일(.xlsx)로 변환 ---
+                    excel_buffer = io.BytesIO()
+                    # engine='openpyxl'을 사용하여 스타일을 엑셀 서식으로 저장
+                    styled_errors.to_excel(excel_buffer, engine='openpyxl', index=False)
+                    excel_data = excel_buffer.getvalue()
+                    
                     st.download_button(
-                        label="📥 오류 내역 CSV 다운로드",
-                        data=csv_errors,
-                        file_name='출고배송비_정산오류내역.csv',
-                        mime='text/csv'
+                        label="📥 오류 내역 엑셀 다운로드 (하이라이트 포함)",
+                        data=excel_data,
+                        file_name='출고배송비_정산오류내역.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     )
                 else:
                     st.success("모든 출고 배송비 건이 기준 등급 및 금액 내에서 정상적으로 청구되었습니다.")
@@ -279,12 +281,16 @@ with tab3:
                     st.dataframe(df_warnings, use_container_width=True)
                     st.info(f"총 {len(warnings_list)}건의 대량(7개 이상) 주문 건이 존재합니다. 수동 확인이 필요합니다.")
                     
-                    csv_warnings = df_warnings.to_csv(index=False).encode('utf-8-sig')
+                    # 예외 내역도 통일성을 위해 엑셀로 다운로드되도록 수정
+                    warning_buffer = io.BytesIO()
+                    df_warnings.to_excel(warning_buffer, index=False, engine='openpyxl')
+                    warning_excel_data = warning_buffer.getvalue()
+                    
                     st.download_button(
-                        label="📥 대량 주문 내역 CSV 다운로드",
-                        data=csv_warnings,
-                        file_name='출고배송비_대량주문예외내역.csv',
-                        mime='text/csv'
+                        label="📥 대량 주문 예외 내역 엑셀 다운로드",
+                        data=warning_excel_data,
+                        file_name='출고배송비_대량주문예외내역.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     )
                 else:
                     st.write("해당되는 대량 주문 건이 없습니다.")
