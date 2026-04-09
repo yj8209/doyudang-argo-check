@@ -59,7 +59,7 @@ with tab1:
     독립 기업인 두유당의 자체적인 기준에 맞추어, 아르고(ARGO) 풀필먼트에서 매월 청구하는 정산 엑셀 데이터의 오류를 정밀하게 검증하는 시스템입니다.
     
     * **이용 방법:** 상단에 아르고에서 전달받은 원본 엑셀 파일 하나만 업로드하면, 아래 각 탭에서 해당 월의 내역을 자동으로 분석합니다.
-    * **출력 기능:** 검증 완료 후 식별된 오류 내역 및 총 초과 청구액은 스타일(하이라이트)과 자동 열 너비가 적용된 엑셀 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
+    * **출력 기능:** 검증 완료 후 식별된 오류 내역 및 총 초과 청구액은 스타일(하이라이트, 천단위 콤마, 너비 자동)이 완벽히 적용된 엑셀 파일로 다운로드하여 증빙 자료로 활용할 수 있습니다.
     """)
 
 with tab2:
@@ -123,8 +123,8 @@ with tab2:
                     st.subheader(f"[{selected_sku}] 입고 검증 결과")
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.metric("입력된 실제 입고 수량", f"{actual_inbound_qty} 개")
-                        st.metric("아르고 청구 입고 수량", f"{int(total_billed_qty)} 개")
+                        st.metric("입력된 실제 입고 수량", f"{actual_inbound_qty:,} 개")
+                        st.metric("아르고 청구 입고 수량", f"{int(total_billed_qty):,} 개")
                     with col2:
                         st.metric("아르고 청구 금액", f"{int(billed_total_amt):,} 원")
                         st.metric("자체 산정 금액", f"{int(calculated_total_amt):,} 원")
@@ -191,7 +191,6 @@ with tab3:
                     packing_cost = 0
                     error_reasons = []
                     
-                    # --- 업데이트된 단가 및 등급 산정 로직 ---
                     if sku_count >= 8:
                         warnings_list.append({
                             '엑셀 행 번호': index + 6, 
@@ -252,6 +251,7 @@ with tab3:
                             '초과 청구액': billed_total - expected_total if billed_total > expected_total else 0
                         })
                 
+                # --- [1] 정산 오류 식별 내역 처리 ---
                 st.subheader("⚠️ 정산 오류 식별 내역 (등급 오분류 및 초과 청구)")
                 if errors_list:
                     df_errors = pd.DataFrame(errors_list)
@@ -272,6 +272,7 @@ with tab3:
                     
                     df_errors = pd.concat([df_errors, total_row], ignore_index=True)
                     
+                    # 앱 화면(UI) 금액 콤마 포맷팅 적용
                     styled_errors = df_errors.style \
                         .set_table_styles([
                             {'selector': 'th', 'props': [('text-align', 'center')]},
@@ -285,20 +286,34 @@ with tab3:
                     st.metric(label="🚨 총 초과 청구 금액 합계", value=f"{int(total_excess):,.0f} 원")
                     st.dataframe(styled_errors, use_container_width=True)
                     
+                    # 엑셀 다운로드 (자동 너비 조절 + 천단위 콤마 서식 적용)
                     excel_buffer = io.BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                         styled_errors.to_excel(writer, index=False, sheet_name='정산오류내역')
                         worksheet = writer.sheets['정산오류내역']
                         
+                        # 열 너비 자동 조정
                         for i, col in enumerate(df_errors.columns):
                             max_len = max(df_errors[col].astype(str).map(len).max(), len(str(col)))
                             adjusted_width = (max_len * 1.8) + 2
                             worksheet.column_dimensions[get_column_letter(i + 1)].width = adjusted_width
                             
+                        # 금액 셀에 엑셀 전용 숫자 서식(#,##0) 적용 (계산 가능한 진짜 숫자)
+                        for row_cells in worksheet.iter_rows(min_row=2):
+                            for cell in row_cells:
+                                col_name = worksheet.cell(row=1, column=cell.column).value
+                                if col_name in ['청구 총금액', '산정 총금액', '초과 청구액']:
+                                    try:
+                                        if pd.notna(cell.value) and str(cell.value).strip() != '':
+                                            cell.value = float(cell.value)
+                                            cell.number_format = '#,##0'
+                                    except:
+                                        pass
+                                        
                     excel_data = excel_buffer.getvalue()
                     
                     st.download_button(
-                        label="📥 오류 내역 엑셀 다운로드 (하이라이트 및 너비 자동맞춤)",
+                        label="📥 오류 내역 엑셀 다운로드 (하이라이트 및 자동맞춤)",
                         data=excel_data,
                         file_name='출고배송비_정산오류내역.xlsx',
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -306,10 +321,21 @@ with tab3:
                 else:
                     st.success("모든 출고 배송비 건이 기준 등급 및 금액 내에서 정상적으로 청구되었습니다.")
                     
+                # --- [2] 대량 주문 예외 내역 처리 ---
                 st.subheader("🔍 별도 확인 필요 (SKU 8개 이상)")
                 if warnings_list:
                     df_warnings = pd.DataFrame(warnings_list)
-                    st.dataframe(df_warnings, use_container_width=True)
+                    
+                    # 앱 화면(UI) 대량 주문 표에도 콤마 서식 추가
+                    styled_warnings = df_warnings.style \
+                        .set_table_styles([
+                            {'selector': 'th', 'props': [('text-align', 'center')]},
+                            {'selector': 'td', 'props': [('text-align', 'center')]}
+                        ]) \
+                        .set_properties(subset=['주문번호'], **{'text-align': 'right'}) \
+                        .format({'청구 총금액': '{:,.0f}'})
+
+                    st.dataframe(styled_warnings, use_container_width=True)
                     st.info(f"총 {len(warnings_list)}건의 대량(8개 이상) 주문 건이 존재합니다. 수동 확인이 필요합니다.")
                     
                     warning_buffer = io.BytesIO()
@@ -317,11 +343,24 @@ with tab3:
                         df_warnings.to_excel(writer, index=False, sheet_name='대량주문예외내역')
                         worksheet = writer.sheets['대량주문예외내역']
                         
+                        # 열 너비 자동 조정
                         for i, col in enumerate(df_warnings.columns):
                             max_len = max(df_warnings[col].astype(str).map(len).max(), len(str(col)))
                             adjusted_width = (max_len * 1.8) + 2
                             worksheet.column_dimensions[get_column_letter(i + 1)].width = adjusted_width
                             
+                        # 금액 셀에 엑셀 전용 숫자 서식(#,##0) 적용
+                        for row_cells in worksheet.iter_rows(min_row=2):
+                            for cell in row_cells:
+                                col_name = worksheet.cell(row=1, column=cell.column).value
+                                if col_name == '청구 총금액':
+                                    try:
+                                        if pd.notna(cell.value) and str(cell.value).strip() != '':
+                                            cell.value = float(cell.value)
+                                            cell.number_format = '#,##0'
+                                    except:
+                                        pass
+                                        
                     warning_excel_data = warning_buffer.getvalue()
                     
                     st.download_button(
