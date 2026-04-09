@@ -191,7 +191,7 @@ with tab3:
                     packing_cost = 0
                     error_reasons = []
                     
-                    # 7개까지 기준이 확립되었으므로 8개 이상부터 예외 처리
+                    # --- 업데이트된 단가 및 등급 산정 로직 ---
                     if sku_count >= 8:
                         warnings_list.append({
                             '엑셀 행 번호': index + 6, 
@@ -229,8 +229,7 @@ with tab3:
                         expected_grade = "특대"
                         base_shipping = 6300 if is_naver else 5800
                         box_cost = 800
-                        if has_diff: 
-                            packing_cost = 400
+                        if has_diff: packing_cost = 400
                         elif has_same: 
                             packing_cost = 250 if sku_count == 6 else 300
                     
