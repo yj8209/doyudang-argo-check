@@ -193,4 +193,289 @@ with tab3:
                         
                         try:
                             sku_count_str = str(row['SKU 개수']).strip()
-                            if sku_count_str.lower() == 'nan
+                            if sku_count_str.lower() == 'nan' or sku_count_str == '': continue
+                            sku_count = int(float(sku_count_str))
+                        except:
+                            continue 
+                        
+                        order_number = str(row['주문번호']).replace('.0', '').strip()
+                        if order_number.lower() == 'nan': order_number = ""
+                        
+                        store_name = str(row['스토어명']).strip()
+                        actual_grade = str(row['등급']).strip()
+                        
+                        billed_total_str = str(row.iloc[col_idx_total]).replace(',', '').strip()
+                        billed_total = float(billed_total_str) if billed_total_str.lower() != 'nan' and billed_total_str != '' else 0
+                        
+                        island_val = str(row.iloc[col_idx_island]).strip()
+                        island_cost = 3000 if island_val.lower() != 'nan' and island_val != '' else 0
+                        
+                        same_val = str(row.iloc[col_idx_same]).strip()
+                        has_same = same_val.lower() != 'nan' and same_val != ''
+                        
+                        diff_val = str(row.iloc[col_idx_diff]).strip()
+                        has_diff = diff_val.lower() != 'nan' and diff_val != ''
+                        
+                        is_naver = '네이버스마트스토어' in store_name
+                        
+                        expected_grade = ""
+                        base_shipping = 0
+                        box_cost = 0
+                        packing_cost = 0
+                        error_reasons = []
+                        
+                        if sku_count >= 8:
+                            warnings_list.append({
+                                '엑셀 행 번호': index + 6, 
+                                '주문번호': order_number,
+                                '스토어명': store_name,
+                                'SKU 개수': sku_count,
+                                '실제 등급': actual_grade,
+                                '청구 총금액': billed_total
+                            })
+                            continue
+                            
+                        elif sku_count == 1:
+                            expected_grade = "극소"
+                            base_shipping = 3050 if is_naver else 2750
+                            box_cost = 220
+                        elif sku_count == 2:
+                            expected_grade = "소"
+                            base_shipping = 3600 if is_naver else 3300
+                            box_cost = 220
+                            if has_diff: packing_cost = 100
+                            elif has_same: packing_cost = 50
+                        elif sku_count in [3, 4]:
+                            expected_grade = "중"
+                            base_shipping = 4100 if is_naver else 3800
+                            box_cost = 450
+                            if has_diff: packing_cost = 250
+                            elif has_same: packing_cost = 150
+                        elif sku_count == 5:
+                            expected_grade = "대"
+                            base_shipping = 5500 if is_naver else 5000
+                            box_cost = 800
+                            if has_diff: packing_cost = 250
+                            elif has_same: packing_cost = 200
+                        elif sku_count in [6, 7]:
+                            expected_grade = "특대"
+                            base_shipping = 6300 if is_naver else 5800
+                            box_cost = 800
+                            if has_diff: packing_cost = 400
+                            elif has_same: 
+                                packing_cost = 250 if sku_count == 6 else 300
+                        
+                        if actual_grade != expected_grade:
+                            error_reasons.append(f"등급 오분류({expected_grade}↔{actual_grade})")
+                        
+                        expected_total = base_shipping + box_cost + packing_cost + island_cost
+                        
+                        if billed_total > expected_total:
+                            error_reasons.append("금액 초과 청구")
+                        
+                        if error_reasons:
+                            errors_list.append({
+                                '엑셀 행': index + 6,
+                                '주문번호': order_number,
+                                'SKU 개수': sku_count,
+                                '오류 사유': " / ".join(error_reasons),
+                                '청구 총금액': billed_total,
+                                '산정 총금액': expected_total,
+                                '초과 청구액': billed_total - expected_total if billed_total > expected_total else 0
+                            })
+                    
+                    st.subheader("⚠️ 정산 오류 식별 내역 (등급 오분류 및 초과 청구)")
+                    if errors_list:
+                        df_errors = pd.DataFrame(errors_list)
+                        
+                        total_billed = df_errors['청구 총금액'].sum()
+                        total_expected = df_errors['산정 총금액'].sum()
+                        total_excess = df_errors['초과 청구액'].sum()
+
+                        total_row = pd.DataFrame({
+                            '엑셀 행': [''],
+                            '주문번호': ['[ 총 합 계 ]'],
+                            'SKU 개수': [''],
+                            '오류 사유': [''],
+                            '청구 총금액': [total_billed],
+                            '산정 총금액': [total_expected],
+                            '초과 청구액': [total_excess]
+                        })
+                        
+                        df_errors = pd.concat([df_errors, total_row], ignore_index=True)
+                        
+                        styled_errors = df_errors.style \
+                            .set_table_styles([
+                                {'selector': 'th', 'props': [('text-align', 'center')]},
+                                {'selector': 'td', 'props': [('text-align', 'center')]}
+                            ]) \
+                            .set_properties(subset=['주문번호'], **{'text-align': 'right'}) \
+                            .set_properties(subset=['초과 청구액'], **{'background-color': '#FFF2CC', 'color': '#D32F2F', 'font-weight': 'bold'}) \
+                            .format({'청구 총금액': '{:,.0f}', '산정 총금액': '{:,.0f}', '초과 청구액': '{:,.0f}'})
+                        
+                        st.error(f"총 {len(errors_list)}건의 정산 오류 내역이 발견되었습니다.")
+                        st.metric(label="🚨 총 초과 청구 금액 합계", value=f"{int(total_excess):,.0f} 원")
+                        st.dataframe(styled_errors, use_container_width=True)
+                        
+                        excel_buffer = io.BytesIO()
+                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                            styled_errors.to_excel(writer, index=False, sheet_name='정산오류내역')
+                            worksheet = writer.sheets['정산오류내역']
+                            
+                            for i, col in enumerate(df_errors.columns):
+                                max_len = max(df_errors[col].astype(str).map(len).max(), len(str(col)))
+                                adjusted_width = (max_len * 1.8) + 2
+                                worksheet.column_dimensions[get_column_letter(i + 1)].width = adjusted_width
+                                
+                            for row_cells in worksheet.iter_rows(min_row=2):
+                                for cell in row_cells:
+                                    col_name = worksheet.cell(row=1, column=cell.column).value
+                                    if col_name in ['청구 총금액', '산정 총금액', '초과 청구액']:
+                                        try:
+                                            if pd.notna(cell.value) and str(cell.value).strip() != '':
+                                                cell.value = float(cell.value)
+                                                cell.number_format = '#,##0'
+                                        except:
+                                            pass
+                                            
+                        excel_data = excel_buffer.getvalue()
+                        
+                        st.download_button(
+                            label="📥 오류 내역 엑셀 다운로드",
+                            data=excel_data,
+                            file_name=f"출고배송비_정산오류내역_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        )
+                    else:
+                        st.success("모든 출고 배송비 건이 기준 등급 및 금액 내에서 정상적으로 청구되었습니다.")
+                        
+                    st.subheader("🔍 별도 확인 필요 (SKU 8개 이상)")
+                    if warnings_list:
+                        df_warnings = pd.DataFrame(warnings_list)
+                        
+                        styled_warnings = df_warnings.style \
+                            .set_table_styles([
+                                {'selector': 'th', 'props': [('text-align', 'center')]},
+                                {'selector': 'td', 'props': [('text-align', 'center')]}
+                            ]) \
+                            .set_properties(subset=['주문번호'], **{'text-align': 'right'}) \
+                            .format({'청구 총금액': '{:,.0f}'})
+
+                        st.dataframe(styled_warnings, use_container_width=True)
+                        st.info(f"총 {len(warnings_list)}건의 대량(8개 이상) 주문 건이 존재합니다. 수동 확인이 필요합니다.")
+                        
+                        warning_buffer = io.BytesIO()
+                        with pd.ExcelWriter(warning_buffer, engine='openpyxl') as writer:
+                            df_warnings.to_excel(writer, index=False, sheet_name='대량주문예외내역')
+                            worksheet = writer.sheets['대량주문예외내역']
+                            
+                            for i, col in enumerate(df_warnings.columns):
+                                max_len = max(df_warnings[col].astype(str).map(len).max(), len(str(col)))
+                                adjusted_width = (max_len * 1.8) + 2
+                                worksheet.column_dimensions[get_column_letter(i + 1)].width = adjusted_width
+                                
+                            for row_cells in worksheet.iter_rows(min_row=2):
+                                for cell in row_cells:
+                                    col_name = worksheet.cell(row=1, column=cell.column).value
+                                    if col_name == '청구 총금액':
+                                        try:
+                                            if pd.notna(cell.value) and str(cell.value).strip() != '':
+                                                cell.value = float(cell.value)
+                                                cell.number_format = '#,##0'
+                                        except:
+                                            pass
+                                            
+                        warning_excel_data = warning_buffer.getvalue()
+                        
+                        st.download_button(
+                            label="📥 대량 주문 예외 내역 엑셀 다운로드",
+                            data=warning_excel_data,
+                            file_name=f"출고배송비_대량주문예외내역_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        )
+                    else:
+                        st.write("해당되는 대량 주문 건이 없습니다.")
+
+# ==========================================
+# TAB 4: 배상금 정산 관리 (구글 시트 연동)
+# ==========================================
+with tab4:
+    st.header("💰 배상금 영구 저장소 (Google Sheets)")
+    
+    df_comp = get_compensation_data()
+
+    with st.form("comp_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            order_no = st.text_input("주문번호 (연관번호)")
+            store_type = st.selectbox("스토어 구분", ["네이버스마트스토어", "카페24"])
+            inquiry_qty = st.number_input("문의요청 수량", min_value=1, step=1)
+        with col2:
+            reg_date = st.date_input("접수일자", datetime.now())
+            proc_date = st.date_input("처리일자", datetime.now())
+            unit_price = st.number_input("개별 판매가격 (원)", min_value=0, step=1)
+        with col3:
+            box_qty = st.number_input("배송 박스 수량", min_value=1, step=1)
+            bundle_type = st.selectbox("합포장 여부", ["없음", "동종", "이종"])
+            is_island = st.checkbox("도서산간 여부 (+3,000원)")
+        
+        submit_btn = st.form_submit_button("구글 시트에 영구 저장")
+
+    if submit_btn:
+        if conn is None:
+            st.error("구글 스프레드시트가 연결되지 않아 저장할 수 없습니다. Secrets 설정을 확인해 주세요.")
+        elif not order_no:
+            st.error("주문번호를 입력해 주세요.")
+        else:
+            p_comp = unit_price * inquiry_qty
+            s_unit = 4800 if store_type == "네이버스마트스토어" else 4400
+            s_comp = (s_unit * box_qty) + (3000 if is_island else 0)
+            
+            new_row = pd.DataFrame([{
+                "주문번호": order_no, 
+                "접수일": reg_date.strftime("%Y-%m-%d"),
+                "처리일": proc_date.strftime("%Y-%m-%d"), 
+                "스토어": store_type,
+                "수량": inquiry_qty, 
+                "판매가": unit_price, 
+                "박스수": box_qty,
+                "합포장": bundle_type, 
+                "상품배상금": p_comp, 
+                "택배배상비": s_comp,
+                "총 배상청구액": p_comp + s_comp
+            }])
+            
+            updated_df = pd.concat([df_comp, new_row], ignore_index=True)
+            conn.update(data=updated_df)
+            st.success("✅ 구글 스프레드시트에 안전하게 저장되었습니다!")
+            st.rerun()
+
+    if not df_comp.empty:
+        try:
+            total_sum = df_comp["총 배상청구액"].astype(float).sum()
+            st.metric("🚨 이번 달 누적 배상 청구 합계", f"{total_sum:,.0f} 원")
+            
+            styled_comp = df_comp.style.format({
+                "판매가": "{:,.0f}", "상품배상금": "{:,.0f}", 
+                "택배배상비": "{:,.0f}", "총 배상청구액": "{:,.0f}"
+            })
+            st.dataframe(styled_comp, use_container_width=True)
+            
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                df_comp.to_excel(writer, index=False, sheet_name='배상금기록')
+                worksheet = writer.sheets['배상금기록']
+                for i, col in enumerate(df_comp.columns):
+                    max_len = max(df_comp[col].astype(str).map(len).max(), len(str(col)))
+                    worksheet.column_dimensions[get_column_letter(i + 1)].width = (max_len * 1.5) + 5
+                    
+            st.download_button(
+                label="📥 전체 배상 내역 엑셀 다운로드",
+                data=excel_buffer.getvalue(),
+                file_name=f"두유당_배상금관리_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+        except Exception as e:
+             st.error("구글 시트 데이터를 표시하는 중 오류가 발생했습니다. 구글 시트의 헤더(첫 줄) 글자가 코드와 일치하는지 확인해 주세요.")
+    else:
+        st.info("현재 구글 시트에 저장된 배상 내역이 없습니다.")
