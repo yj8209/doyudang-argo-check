@@ -175,4 +175,110 @@ with tab3:
                         egrd, base, box = "소", (3600 if is_n else 3300), 220
                         pack = 100 if hd else (50 if hs else 0)
                     elif sku_c in [3, 4]:
-                        egrd, base, box = "중", (4100 if is_n else 380
+                        egrd, base, box = "중", (4100 if is_n else 3800), 450
+                        pack = 250 if hd else (150 if hs else 0)
+                    elif sku_c == 5:
+                        egrd, base, box = "대", (5500 if is_n else 5000), 800
+                        pack = 250 if hd else (200 if hs else 0)
+                    elif sku_c in [6, 7]:
+                        egrd, base, box = "특대", (6300 if is_n else 5800), 800
+                        if hd: pack = 400
+                        elif hs: pack = 250 if sku_c == 6 else 300
+                    
+                    etot = base + box + pack + isl_c
+                    if btot > etot or agrd != egrd:
+                        errs.append({'행': idx+6, '주문번호': ono, 'SKU': sku_c, '청구': btot, '산정': etot, '초과': max(0, btot-etot)})
+                
+                if errs:
+                    df_e = pd.DataFrame(errs)
+                    st.error(f"{len(errs)}건의 오류 발견")
+                    st.metric("🚨 총 초과 청구액", f"{int(df_e['초과'].sum()):,}")
+                    st.dataframe(df_e.style.format({'청구': '{:,.0f}', '산정': '{:,.0f}', '초과': '{:,.0f}'}))
+                else: st.success("모든 내역이 정상입니다.")
+
+# ==========================================
+# TAB 4: 배상금 정산 관리 (수정/삭제 기능 추가)
+# ==========================================
+with tab4:
+    st.header("💰 배상금 관리 및 데이터 편집")
+    
+    # 데이터 로드
+    df_comp = get_compensation_data()
+    display_cols = ["주문번호", "접수일", "처리일", "스토어", "수량", "판매가", "박스수", "합포장", "상품배상금", "택배배상비", "총 배상청구액"]
+
+    if not df_comp.empty:
+        df_comp['접수일_DT'] = pd.to_datetime(df_comp['접수일'], errors='coerce')
+        df_comp['정산월'] = df_comp['접수일_DT'].dt.strftime('%Y-%m')
+        
+        m_list = sorted(df_comp['정산월'].dropna().unique(), reverse=True)
+        sel_m = st.selectbox("📅 정산 확인 및 편집 월 선택", ["전체 보기"] + m_list)
+        
+        # 필터링
+        if sel_m == "전체 보기": f_df = df_comp[display_cols].copy()
+        else: f_df = df_comp[df_comp['정산월'] == sel_m][display_cols].copy()
+        
+        st.subheader(f"🔍 {sel_m} 상세 내역 (표 안의 값을 더블 클릭하여 수정 가능)")
+        st.info("💡 행을 삭제하려면 왼쪽 체크박스 선택 후 Delete 키를 누르세요. 수정 후 하단 버튼을 꼭 눌러야 시트에 반영됩니다.")
+        
+        # [핵심] 데이터 편집기 사용
+        edited_df = st.data_editor(
+            f_df,
+            use_container_width=True,
+            num_rows="dynamic",  # 행 삭제/추가 가능
+            column_config={
+                "총 배상청구액": st.column_config.NumberColumn(format="%d 원"),
+                "상품배상금": st.column_config.NumberColumn(format="%d 원"),
+                "판매가": st.column_config.NumberColumn(format="%d 원")
+            }
+        )
+        
+        col_btn1, col_btn2 = st.columns([1, 4])
+        with col_btn1:
+            if st.button("💾 변경사항 구글 시트에 최종 적용", type="primary"):
+                try:
+                    # 편집된 데이터로 구글 시트 업데이트
+                    if sel_m == "전체 보기":
+                        final_to_save = edited_df
+                    else:
+                        # 필터링된 경우, 원본 데이터에서 해당 월만 교체
+                        other_months = df_comp[df_comp['정산월'] != sel_m][display_cols]
+                        final_to_save = pd.concat([other_months, edited_df], ignore_index=True)
+                    
+                    conn.update(data=final_to_save)
+                    st.success("✅ 구글 시트 데이터가 성공적으로 수정되었습니다!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 중 오류가 발생했습니다: {e}")
+
+        # 합계 지표
+        st.metric(f"🚨 {sel_m} 정산 합계", f"{edited_df['총 배상청구액'].sum():,.0f} 원")
+
+    st.markdown("---")
+    st.subheader("📝 신규 배상 내역 입력")
+    with st.form("new_comp_form", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            on = st.text_input("주문번호")
+            stt = st.selectbox("스토어", ["네이버스마트스토어", "카페24"])
+            iq = st.number_input("수량", min_value=1)
+        with c2:
+            rd = st.date_input("접수일", datetime.now())
+            pd = st.date_input("처리일", datetime.now())
+            up = st.number_input("단가", min_value=0)
+        with c3:
+            bq = st.number_input("박스 수", min_value=1)
+            bt = st.selectbox("합포장", ["없음", "동종", "이종"])
+            ii = st.checkbox("도서산간 (+3,000)")
+        
+        if st.form_submit_button("저장하기"):
+            if on:
+                pc = up * iq
+                sc = ((4800 if stt == "네이버스마트스토어" else 4400) * bq) + (3000 if ii else 0)
+                new_r = pd.DataFrame([{
+                    "주문번호": on, "접수일": rd.strftime("%Y-%m-%d"), "처리일": pd.strftime("%Y-%m-%d"),
+                    "스토어": stt, "수량": iq, "판매가": up, "박스수": bq, "합포장": bt,
+                    "상품배상금": pc, "택배배상비": sc, "총 배상청구액": pc + sc
+                }])
+                conn.update(data=pd.concat([df_comp[display_cols], new_r], ignore_index=True))
+                st.success("저장 완료!")
+                st.rerun()
